@@ -331,3 +331,35 @@ fn read_only_rows_are_dimmed() {
     let editable = colour_of_row_containing("Device Description");
     assert!(editable.iter().any(|c| *c != Color::DarkGray));
 }
+
+#[test]
+fn confirm_box_is_not_clipped() {
+    for dhcp in [false, true] {
+        let form = SettingsForm::from_switch(
+            &switch("Tibault", [10, 0, 4, 254], dhcp),
+            &Credentials::default(),
+        );
+        let text = render(120, 30, |frame| ui::draw_confirm(frame, &form));
+        println!("--- dhcp={dhcp}\n{text}");
+
+        // The instruction has to survive whole; it was previously wrapping
+        // onto a line the box had no room for.
+        assert!(text.contains("Press y to confirm, or esc to cancel."));
+        assert!(text.contains("applies this immediately"));
+        // And the switch must still be identifiable.
+        assert!(text.contains("TL-SG108PE"));
+        assert!(text.contains("C0:06:C3:1A:CA:A8"));
+
+        // Every rendered line must sit inside the border box.
+        let bordered: Vec<&str> = text
+            .lines()
+            .filter(|l| l.contains('│') || l.contains('┌') || l.contains('└'))
+            .collect();
+        let body: Vec<&str> = text
+            .lines()
+            .filter(|l| !l.trim().is_empty() && !l.contains('│') && !l.contains('┌') && !l.contains('└'))
+            .collect();
+        assert!(!bordered.is_empty(), "box did not render");
+        assert!(body.is_empty(), "text escaped the box: {body:?}");
+    }
+}

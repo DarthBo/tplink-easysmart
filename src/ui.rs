@@ -3,7 +3,7 @@
 
 use ratatui::prelude::*;
 use ratatui::widgets::{
-    Block, Borders, Cell, Clear, Padding, Paragraph, Row, Table, TableState, Wrap,
+    Block, Borders, Cell, Clear, Padding, Paragraph, Row, Table, TableState,
 };
 
 use crate::app::{App, Field, Mode, SettingsForm};
@@ -331,8 +331,9 @@ pub fn draw_settings(frame: &mut Frame, form: &SettingsForm) {
     );
 }
 
-fn draw_confirm(frame: &mut Frame, form: &SettingsForm) {
-    let area = centered(frame, 54, 7);
+pub fn draw_confirm(frame: &mut Frame, form: &SettingsForm) {
+    let lines = confirm_lines(form);
+    let area = centered(frame, 58, lines.len() as u16 + 2);
     frame.render_widget(Clear, area);
 
     let block = Block::default()
@@ -342,22 +343,33 @@ fn draw_confirm(frame: &mut Frame, form: &SettingsForm) {
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    let summary = if form.dhcp {
-        "DHCP enabled (address assigned by the server)".to_string()
+    // No wrapping: the box is sized from these lines, so nothing can be
+    // clipped off the bottom.
+    frame.render_widget(Paragraph::new(lines), inner);
+}
+
+/// The body of the confirmation box. Kept short enough to fit on one line
+/// each at the width above.
+fn confirm_lines(form: &SettingsForm) -> Vec<Line<'static>> {
+    let address = if form.dhcp {
+        "DHCP (assigned by the server)".to_string()
     } else {
         format!("{} / {}", form.ip.value, form.netmask.value)
     };
-    let text = vec![
-        Line::from(format!("Switch:  {}", form.title)),
-        Line::from(format!("Address: {summary}")),
-        Line::from("Flash:   saved"),
+    vec![
+        Line::from(format!(" Switch:   {}  {}", form.model, form.mac_display)),
+        Line::from(format!(" Address:  {address}")),
+        Line::from(" Flash:    saved"),
         Line::from(""),
         Line::from(Span::styled(
-            "The switch will apply this immediately.  y to confirm.",
+            " The switch applies this immediately.",
             Style::default().fg(Color::Yellow),
         )),
-    ];
-    frame.render_widget(Paragraph::new(text).wrap(Wrap { trim: true }), inner);
+        Line::from(Span::styled(
+            " Press y to confirm, or esc to cancel.",
+            Style::default().fg(Color::Yellow),
+        )),
+    ]
 }
 
 fn draw_help(frame: &mut Frame) {

@@ -149,6 +149,7 @@ pub struct SettingsForm {
     /// Read-only detail shown above the editable fields, as the vendor
     /// dialog does.
     pub mac_display: String,
+    pub model: String,
     pub hardware: String,
     pub firmware: String,
     pub port_count: Option<u8>,
@@ -168,6 +169,7 @@ impl SettingsForm {
             mac: s.mac,
             title: format!("IP Setting  -  {}", s.model),
             mac_display: s.mac_string(),
+            model: s.model.clone(),
             hardware: s.hardware.clone(),
             firmware: s.firmware.clone(),
             port_count: s.port_count,
