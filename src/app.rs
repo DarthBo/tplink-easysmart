@@ -142,6 +142,7 @@ impl Field {
     }
 }
 
+#[derive(Clone)]
 pub struct SettingsForm {
     pub mac: [u8; 6],
     pub title: String,
@@ -356,6 +357,16 @@ pub enum Mode {
     Help,
 }
 
+/// Work that blocks on the network. The event loop paints the busy line
+/// before running it, so a scan never looks like a freeze.
+pub enum Pending {
+    Refresh,
+    OpenSettings,
+    // Boxed: the form dwarfs the other variants, and this enum is stored in
+    // App for the lifetime of the program.
+    Apply(Box<SettingsForm>),
+}
+
 pub struct Status {
     pub text: String,
     pub error: bool,
@@ -379,6 +390,7 @@ pub struct App {
     pub status: Option<Status>,
     pub creds: Credentials,
     pub busy: Option<String>,
+    pub pending: Option<Pending>,
     pub should_quit: bool,
 }
 
@@ -392,8 +404,27 @@ impl App {
             status: None,
             creds: Credentials::default(),
             busy: None,
+            pending: None,
             should_quit: false,
         }
+    }
+
+    /// Queue blocking work and describe it, for the frame drawn just before.
+    fn defer(&mut self, what: Pending, note: &str) {
+        self.busy = Some(note.to_string());
+        self.pending = Some(what);
+    }
+
+    /// Run whatever `defer` queued. Called by the event loop after it has had
+    /// a chance to paint.
+    pub fn run_pending(&mut self) {
+        let Some(work) = self.pending.take() else { return };
+        match work {
+            Pending::Refresh => self.refresh(),
+            Pending::OpenSettings => self.open_settings(),
+            Pending::Apply(form) => self.apply(*form),
+        }
+        self.busy = None;
     }
 
     pub fn info(&mut self, text: impl Into<String>) {
@@ -413,6 +444,11 @@ impl App {
 
     pub fn selected_switch(&self) -> Option<&SwitchInfo> {
         self.switches.get(self.selected)
+    }
+
+    /// Queue the startup scan.
+    pub fn queue_initial_scan(&mut self) {
+        self.defer(Pending::Refresh, "Scanning for switches...");
     }
 
     pub fn refresh(&mut self) {
@@ -510,8 +546,9 @@ impl App {
                     Err(e) => note.push_str(&format!(", but saving to flash failed: {e}")),
                 }
                 self.mode = Mode::List;
-                self.info(note);
+                self.busy = Some("Rescanning...".into());
                 self.refresh();
+                self.info(note);
             }
         }
     }
@@ -529,7 +566,12 @@ impl App {
             },
             Mode::Settings(form) => self.on_key_settings(key, form),
             Mode::Confirm(form) => match key.code {
-                KeyCode::Char('y') | KeyCode::Char('Y') | KeyCode::Enter => self.apply(form),
+                KeyCode::Char('y') | KeyCode::Char('Y') | KeyCode::Enter => {
+                    // Keep the dialog on screen, with a busy line, while the
+                    // write is in flight.
+                    self.defer(Pending::Apply(Box::new(form.clone())), "Applying...");
+                    self.mode = Mode::Confirm(form);
+                }
                 _ => {
                     self.mode = Mode::Settings(form);
                     self.info("Cancelled");
@@ -542,9 +584,13 @@ impl App {
         match key.code {
             KeyCode::Char('q') | KeyCode::Esc => self.should_quit = true,
             KeyCode::Char('?') => self.mode = Mode::Help,
-            KeyCode::Char('r') => self.refresh(),
+            KeyCode::Char('r') => self.defer(Pending::Refresh, "Scanning for switches..."),
             KeyCode::Char('w') => self.open_web_ui(),
-            KeyCode::Enter | KeyCode::Char('s') => self.open_settings(),
+            KeyCode::Enter | KeyCode::Char('s') => {
+                if self.selected_switch().is_some() {
+                    self.defer(Pending::OpenSettings, "Reading settings...");
+                }
+            }
             KeyCode::Down | KeyCode::Char('j') => {
                 if !self.switches.is_empty() {
                     self.selected = (self.selected + 1) % self.switches.len();

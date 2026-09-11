@@ -239,14 +239,14 @@ pub fn draw_settings(frame: &mut Frame, form: &SettingsForm) {
     .into_iter()
     .enumerate()
     {
+        // Value as well as label in dim grey: these rows are read-only, and
+        // rendering the values like the editable fields below implies they
+        // aren't.
         frame.render_widget(
-            Paragraph::new(Line::from(vec![
-                Span::styled(
-                    format!(" {label:<label_width$}"),
-                    Style::default().fg(Color::DarkGray),
-                ),
-                Span::raw(value.to_string()),
-            ])),
+            Paragraph::new(Line::from(Span::styled(
+                format!(" {label:<label_width$}{value}"),
+                Style::default().fg(Color::DarkGray),
+            ))),
             rows[i],
         );
     }

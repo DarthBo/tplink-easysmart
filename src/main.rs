@@ -106,15 +106,19 @@ fn event_loop<B: ratatui::backend::Backend>(
     terminal: &mut Terminal<B>,
     app: &mut App,
 ) -> io::Result<()> {
-    // Paint the empty table with a "scanning" note before the first blocking
-    // discovery, so startup doesn't look like a hang.
-    app.busy = Some("Scanning for switches...".into());
-    terminal.draw(|f| ui::draw(f, app))?;
-    app.refresh();
-    app.busy = None;
+    // Scan on startup, via the same deferred path as a manual rescan so the
+    // "scanning" note is painted before anything blocks.
+    app.queue_initial_scan();
 
     loop {
         terminal.draw(|f| ui::draw(f, app))?;
+
+        // Anything that blocks on the network runs here, after the frame above
+        // has shown what is happening.
+        if app.pending.is_some() {
+            app.run_pending();
+            continue;
+        }
 
         if !event::poll(Duration::from_millis(200))? {
             app.tick();

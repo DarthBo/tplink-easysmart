@@ -29,7 +29,8 @@ impl Client {
         // find nothing when run under a Linux JRE.
         let socket = UdpSocket::bind(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, HOST_PORT))?;
         socket.set_broadcast(true)?;
-        socket.set_read_timeout(Some(Duration::from_millis(300)))?;
+        // Short enough that a window with no reply still ends promptly.
+        socket.set_read_timeout(Some(Duration::from_millis(100)))?;
         // A wildcard bind would otherwise send the limited broadcast out
         // whichever interface the routing table prefers, ignoring --interface.
         bind_to_device(&socket, &iface.name)?;
@@ -56,8 +57,18 @@ impl Client {
         Ok(())
     }
 
-    /// Collect every reply carrying `sequence` until `window` elapses.
-    fn collect(&mut self, sequence: u16, window: Duration) -> Vec<Packet> {
+    /// Collect replies carrying `sequence`. Stops early once `done` accepts a
+    /// packet, and otherwise waits out `window`.
+    ///
+    /// Discovery has to wait the full window because any number of switches may
+    /// answer, but a request aimed at one switch expects exactly one reply --
+    /// draining the rest of the window there just makes the UI feel dead.
+    fn collect_until(
+        &mut self,
+        sequence: u16,
+        window: Duration,
+        done: impl Fn(&Packet) -> bool,
+    ) -> Vec<Packet> {
         let deadline = Instant::now() + window;
         let mut buf = [0u8; 8192];
         let mut out = Vec::new();
@@ -81,9 +92,18 @@ impl Client {
             if pkt.header.token != 0 {
                 self.token = pkt.header.token;
             }
+            let finished = done(&pkt);
             out.push(pkt);
+            if finished {
+                break;
+            }
         }
         out
+    }
+
+    /// Collect every reply carrying `sequence` for the whole window.
+    fn collect(&mut self, sequence: u16, window: Duration) -> Vec<Packet> {
+        self.collect_until(sequence, window, |_| false)
     }
 
     fn request(&mut self, opcode: u8, switch_mac: [u8; 6], tlvs: Vec<Tlv>) -> Packet {
@@ -119,10 +139,11 @@ impl Client {
         let seq = packet.header.sequence;
         self.send(&packet)?;
 
+        let is_reply = move |p: &Packet| p.header.opcode == op::READ_REPLY && p.header.switch_mac == mac;
         Ok(self
-            .collect(seq, window)
+            .collect_until(seq, window, is_reply)
             .into_iter()
-            .find(|p| p.header.opcode == op::READ_REPLY && p.header.switch_mac == mac)
+            .find(is_reply)
             .map(|p| SwitchInfo::from_packet(&p)))
     }
 
@@ -180,10 +201,11 @@ impl Client {
         let seq = packet.header.sequence;
         self.send(&packet)?;
 
+        let is_reply = move |p: &Packet| p.header.opcode == op::SET_REPLY && p.header.switch_mac == mac;
         let reply = self
-            .collect(seq, window)
+            .collect_until(seq, window, is_reply)
             .into_iter()
-            .find(|p| p.header.opcode == op::SET_REPLY && p.header.switch_mac == mac);
+            .find(is_reply);
 
         Ok(match reply {
             None => Err("no response from switch".to_string()),

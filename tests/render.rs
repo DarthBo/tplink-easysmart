@@ -283,3 +283,51 @@ fn arrows_move_between_the_two_buttons() {
     form.on_key(key(KeyCode::Left));
     assert_eq!(form.field(), Field::Apply);
 }
+
+#[test]
+fn read_only_rows_are_dimmed() {
+    use ratatui::style::Color;
+
+    let form = SettingsForm::from_switch(
+        &switch("Tibault", [10, 0, 4, 254], false),
+        &Credentials::default(),
+    );
+    let mut terminal = Terminal::new(TestBackend::new(100, 24)).unwrap();
+    terminal.draw(|frame| ui::draw_settings(frame, &form)).unwrap();
+    let buffer = terminal.backend().buffer().clone();
+
+    // Locate a row by its text, then check every glyph on it is dim -- the
+    // value as well as the label, so it cannot be mistaken for an input.
+    let colour_of_row_containing = |needle: &str| -> Vec<Color> {
+        for y in 0..buffer.area.height {
+            let line: String = (0..buffer.area.width)
+                .map(|x| buffer[(x, y)].symbol().to_string())
+                .collect();
+            if line.contains(needle) {
+                return (0..buffer.area.width)
+                    .map(|x| buffer[(x, y)].symbol().to_string())
+                    .enumerate()
+                    // Skip blanks and the dialog's own border glyphs.
+                    .filter(|(_, sym)| {
+                        !sym.trim().is_empty() && !sym.chars().all(|c| ('\u{2500}'..='\u{257F}').contains(&c))
+                    })
+                    .map(|(x, _)| buffer[(x as u16, y)].style().fg.unwrap_or(Color::Reset))
+                    .collect();
+            }
+        }
+        panic!("no row containing {needle:?}");
+    };
+
+    for needle in ["MAC Address", "Hardware Version", "Firmware Version"] {
+        let colours = colour_of_row_containing(needle);
+        assert!(!colours.is_empty(), "{needle} row was blank");
+        assert!(
+            colours.iter().all(|c| *c == Color::DarkGray),
+            "{needle} row should be entirely dim, got {colours:?}"
+        );
+    }
+
+    // An editable field must not be dim, or the distinction is meaningless.
+    let editable = colour_of_row_containing("Device Description");
+    assert!(editable.iter().any(|c| *c != Color::DarkGray));
+}
