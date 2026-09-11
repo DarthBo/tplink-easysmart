@@ -158,9 +158,9 @@ impl Client {
     ) -> io::Result<Result<(), String>> {
         // Order matters: the utility puts the credentials first.
         let mut tlvs = vec![
-            Tlv::new(tlv::USERNAME, creds.username.as_bytes()),
-            Tlv::new(tlv::PASSWORD, creds.password.as_bytes()),
-            Tlv::new(tlv::DESCRIPTION, settings.description.as_bytes()),
+            Tlv::string(tlv::USERNAME, &creds.username),
+            Tlv::string(tlv::PASSWORD, &creds.password),
+            Tlv::string(tlv::DESCRIPTION, &settings.description),
             Tlv::new(tlv::DHCP, vec![settings.dhcp as u8]),
         ];
         // With DHCP on, the utility sends zeroes rather than the stale values.
@@ -184,11 +184,27 @@ impl Client {
         window: Duration,
     ) -> io::Result<Result<(), String>> {
         let tlvs = vec![
-            Tlv::new(tlv::USERNAME, creds.username.as_bytes()),
-            Tlv::new(tlv::PASSWORD, creds.password.as_bytes()),
+            Tlv::string(tlv::USERNAME, &creds.username),
+            Tlv::string(tlv::PASSWORD, &creds.password),
             Tlv::empty(tlv::SAVE_CONFIG),
         ];
         self.write_request(mac, tlvs, window)
+    }
+
+    /// Writes are gated on a single-use token. The switch issues one in reply
+    /// to a TLV 2305 read, and silently drops any set carrying a zero or stale
+    /// token -- no error, no response at all -- so one must be fetched
+    /// immediately before every write.
+    fn refresh_token(&mut self, mac: [u8; 6], window: Duration) -> io::Result<bool> {
+        let packet = self.request(op::GET, mac, vec![Tlv::empty(tlv::TOKEN)]);
+        let seq = packet.header.sequence;
+        self.send(&packet)?;
+
+        let issued = |p: &Packet| {
+            p.header.opcode == op::READ_REPLY && p.header.switch_mac == mac && p.header.token != 0
+        };
+        // collect_until records the token as it goes.
+        Ok(self.collect_until(seq, window, issued).iter().any(issued))
     }
 
     fn write_request(
@@ -197,6 +213,9 @@ impl Client {
         tlvs: Vec<Tlv>,
         window: Duration,
     ) -> io::Result<Result<(), String>> {
+        if !self.refresh_token(mac, window)? {
+            return Ok(Err("switch did not issue a write token".to_string()));
+        }
         let packet = self.request(op::SET, mac, tlvs);
         let seq = packet.header.sequence;
         self.send(&packet)?;

@@ -35,6 +35,9 @@ pub mod tlv {
     pub const USERNAME: u16 = 512;
     pub const PASSWORD: u16 = 514;
     pub const SAVE_CONFIG: u16 = 2304;
+    /// Read this to be issued a single-use token, which the next write must
+    /// carry in its header.
+    pub const TOKEN: u16 = 2305;
     /// Terminates the TLV list: type 0xFFFF with zero length.
     pub const END: u16 = 0xFFFF;
 }
@@ -128,6 +131,14 @@ impl Tlv {
 
     pub fn empty(kind: u16) -> Self {
         Tlv { kind, value: Vec::new() }
+    }
+
+    /// String fields go on the wire NUL-terminated, as the vendor utility
+    /// sends them.
+    pub fn string(kind: u16, value: &str) -> Self {
+        let mut bytes = value.as_bytes().to_vec();
+        bytes.push(0);
+        Tlv { kind, value: bytes }
     }
 
     /// Trailing NULs are common in string fields; strip them.
@@ -241,6 +252,13 @@ mod tests {
         };
         // Just the 4-byte end marker beyond the header.
         assert_eq!(Packet::decode(&pkt.encode()).unwrap().header.length as usize, HEADER_LEN + 4);
+    }
+
+    #[test]
+    fn strings_go_on_the_wire_nul_terminated() {
+        let tlv = Tlv::string(tlv::USERNAME, "admin");
+        assert_eq!(tlv.value, b"admin\0");
+        assert_eq!(Tlv::string(tlv::DESCRIPTION, "").value, b"\0");
     }
 
     #[test]

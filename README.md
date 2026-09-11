@@ -94,11 +94,35 @@ test asserts the derived value.
 Credentials travel as plain TLVs (512/514) inside that RC4 layer, so anyone on
 the segment can read them off the wire. Treat these switches accordingly.
 
+**Writes are gated on a single-use token.** Reading TLV 2305 makes the switch
+issue a token in the reply *header*; the following set must carry it. A set
+with token 0, or a token already spent, is discarded **silently** -- no error
+code, no reply at all -- which makes this the single most confusing part of the
+protocol to reverse-engineer. Fetch a fresh token immediately before every
+write, including the save-to-flash write.
+
+The same silence applies to reads of privileged fields: a plain read of TLV 512
+(username) is dropped, while reads of TLV 2 or 10 answer normally.
+
 **Writes.** A set request carries username and password first, then the fields.
-With DHCP enabled the address TLVs are sent as `0.0.0.0`. A set changes the
-running config only; persisting needs a second request carrying TLV 2304. The
-vendor dialog has a "save config" checkbox for this, but its FXML marks it
-`visible="false"` and the controller ticks it at startup, so in practice the
-utility always saves. This tool does the same, without the dead control.
+String values -- username, password, description -- are NUL-terminated on the
+wire. With DHCP enabled the address TLVs are sent as `0.0.0.0`. A set changes
+the running config only; persisting needs a second request carrying TLV 2304
+(and its own fresh token). The vendor dialog has a "save config" checkbox for
+this, but its FXML marks it `visible="false"` and the controller ticks it at
+startup, so in practice the utility always saves. This tool does the same,
+without the dead control.
+
+**A dead end worth recording.** The utility also contains an RSA key exchange
+(TLV 528, a hand-rolled bignum with a 64-bit or 1024-bit modulus and exponent
+65537) that negotiates an alternative 8-byte stream cipher, selected per-MAC.
+It is unrelated to the token mechanism and is not used by TL-SG108PE firmware
+1.0.0 -- this tool does not implement it. If a future switch answers nothing
+even with a valid token, that is the first place to look.
+
+**Credentials are cleartext.** They travel as plain TLVs inside the RC4 layer,
+which uses a fixed key extractable from the vendor binary. Anyone on the
+segment can read the switch password off the wire. These devices are not
+suitable for an untrusted network.
 Descriptions must match `^[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?$`, 32 chars
 max — the switch rejects anything else.
