@@ -1,0 +1,119 @@
+//! Packet obfuscation used by the Easy Smart protocol.
+//!
+//! Every datagram — header included — is RC4'd with a fixed 256-byte key. The
+//! utility does not ship that key directly: it ships a TEA-encrypted blob and
+//! decrypts it at startup. We reproduce that derivation rather than pasting the
+//! plaintext in, so the constant below stays traceable to the vendor binary.
+
+use std::sync::OnceLock;
+
+/// TEA key guarding `KEY_BLOB` (`transfer.mine.oQ` in the utility).
+const TEA_KEY: [i32; 4] = [2023708229, -158607964, -2120859654, 1167043672];
+/// The usual TEA delta, 0x9E3779B9, as the signed value the utility uses.
+const DELTA: i32 = -1640531527;
+/// `sum` at the start of a 32-round decipher (0xC6EF3720).
+const SUM_32: i32 = -957401312;
+
+/// TEA-encrypted RC4 key material, verbatim from `transfer.of.aM()`.
+const KEY_BLOB: [u8; 264] = [
+    0xca, 0x43, 0x88, 0xb7, 0x55, 0x99, 0x45, 0x4c, 0x45, 0xf7, 0xa9, 0xb9, 0xe3, 0x56, 0xb5, 0x48,
+    0x2f, 0x08, 0xff, 0x00, 0x95, 0x6f, 0x18, 0x13, 0x01, 0xfa, 0x49, 0x21, 0x35, 0x4f, 0xcb, 0xc4,
+    0xc1, 0xa8, 0x1e, 0x64, 0x86, 0x54, 0xe5, 0xd4, 0xdf, 0x08, 0x91, 0x57, 0xda, 0xdd, 0x6b, 0xda,
+    0x56, 0xf7, 0x50, 0x76, 0x27, 0x08, 0x8b, 0x68, 0x53, 0xc5, 0x57, 0x57, 0x78, 0xd3, 0x7f, 0x61,
+    0x15, 0xac, 0xc5, 0x07, 0x47, 0xec, 0x07, 0x75, 0xb6, 0x0d, 0x03, 0xa9, 0xbd, 0xe7, 0x3a, 0x5a,
+    0x24, 0x2b, 0xcb, 0xd2, 0x3b, 0xf9, 0x9f, 0x58, 0x09, 0xc9, 0x4b, 0xb5, 0xca, 0xb3, 0xa0, 0x26,
+    0xe6, 0x09, 0x57, 0xf0, 0x1a, 0xe1, 0x44, 0x47, 0x86, 0xd0, 0x3f, 0xa6, 0x53, 0x62, 0xed, 0x7d,
+    0x09, 0xfe, 0x85, 0x9e, 0x99, 0x73, 0xf5, 0x05, 0xef, 0x0d, 0x74, 0x99, 0xb3, 0x75, 0x94, 0xfa,
+    0x46, 0x36, 0xad, 0xeb, 0xa5, 0x0f, 0x9c, 0x00, 0x6f, 0x70, 0x8c, 0x1c, 0x1d, 0x63, 0x02, 0xa9,
+    0x01, 0xf7, 0x61, 0x7d, 0x92, 0x52, 0xf7, 0xb3, 0x3b, 0x31, 0x07, 0x4e, 0xb8, 0x76, 0x4d, 0xf7,
+    0x67, 0x35, 0xca, 0xe6, 0x4c, 0xef, 0x03, 0x1d, 0x78, 0x47, 0x29, 0xc7, 0x66, 0x03, 0x20, 0x7f,
+    0x54, 0xf6, 0x55, 0xc5, 0xe8, 0x0d, 0xd6, 0x12, 0x8e, 0xb7, 0x73, 0x5b, 0xc9, 0xf5, 0xee, 0x6e,
+    0x13, 0x93, 0xe0, 0xde, 0x4e, 0x4d, 0x82, 0x65, 0x47, 0xe9, 0xdb, 0x96, 0x55, 0x63, 0xac, 0xdc,
+    0x00, 0xf2, 0x9c, 0x72, 0xf6, 0x6e, 0xf7, 0xe6, 0xb8, 0x3a, 0xfb, 0x04, 0x4c, 0x1a, 0x11, 0x10,
+    0xff, 0x50, 0x7f, 0x90, 0x68, 0x5a, 0xac, 0xf5, 0xc3, 0xe3, 0x1e, 0xca, 0x0e, 0x93, 0x48, 0x9b,
+    0x19, 0xf8, 0x9a, 0x83, 0x14, 0x2e, 0xa3, 0x93, 0x3e, 0xb8, 0x8b, 0x2b, 0xea, 0x51, 0xe7, 0x29,
+    0xfc, 0xc1, 0xb6, 0x44, 0x1b, 0x48, 0x06, 0xd5,
+];
+
+/// One 32-round TEA decipher, mirroring the utility's signed-int arithmetic.
+fn tea_decipher(mut v0: i32, mut v1: i32) -> (i32, i32) {
+    let [k0, k1, k2, k3] = TEA_KEY;
+    let mut sum = SUM_32;
+    for _ in 0..32 {
+        v1 = v1.wrapping_sub(
+            (v0.wrapping_shl(4).wrapping_add(k2))
+                ^ v0.wrapping_add(sum)
+                ^ ((v0 >> 5).wrapping_add(k3)),
+        );
+        v0 = v0.wrapping_sub(
+            (v1.wrapping_shl(4).wrapping_add(k0))
+                ^ v1.wrapping_add(sum)
+                ^ ((v1 >> 5).wrapping_add(k1)),
+        );
+        sum = sum.wrapping_sub(DELTA);
+    }
+    (v0, v1)
+}
+
+/// The 256-byte RC4 key, deciphered from `KEY_BLOB` on first use.
+fn rc4_key() -> &'static [u8] {
+    static KEY: OnceLock<Vec<u8>> = OnceLock::new();
+    KEY.get_or_init(|| {
+        let mut out = [0u8; KEY_BLOB.len()];
+        for off in (0..KEY_BLOB.len()).step_by(8) {
+            let v0 = i32::from_be_bytes(KEY_BLOB[off..off + 4].try_into().unwrap());
+            let v1 = i32::from_be_bytes(KEY_BLOB[off + 4..off + 8].try_into().unwrap());
+            let (d0, d1) = tea_decipher(v0, v1);
+            out[off..off + 4].copy_from_slice(&d0.to_be_bytes());
+            out[off + 4..off + 8].copy_from_slice(&d1.to_be_bytes());
+        }
+        // Byte 0 is the pad length; the key is everything after the padding.
+        out[out[0] as usize..].to_vec()
+    })
+}
+
+/// RC4 over the buffer in place. The cipher is symmetric and restarts from the
+/// key schedule for every datagram, so this both encrypts and decrypts.
+pub fn rc4(data: &mut [u8]) {
+    let key = rc4_key();
+    let mut s: [u8; 256] = std::array::from_fn(|i| i as u8);
+    let mut j = 0u8;
+    for i in 0..256 {
+        j = j
+            .wrapping_add(s[i])
+            .wrapping_add(key[i % key.len()]);
+        s.swap(i, j as usize);
+    }
+    let (mut i, mut j) = (0u8, 0u8);
+    for b in data.iter_mut() {
+        i = i.wrapping_add(1);
+        j = j.wrapping_add(s[i as usize]);
+        s.swap(i as usize, j as usize);
+        let k = s[i as usize].wrapping_add(s[j as usize]);
+        *b ^= s[k as usize];
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn key_derives_to_expected_material() {
+        let key = rc4_key();
+        assert_eq!(key.len(), 256);
+        assert!(key.iter().all(|c| c.is_ascii_graphic()));
+        assert!(key.starts_with(b"Ei2HNryt8ysSdRRI"));
+        assert!(key.ends_with(b"ewMU6o1tJ3iX"));
+    }
+
+    #[test]
+    fn rc4_round_trips() {
+        let original = b"the quick brown fox".to_vec();
+        let mut buf = original.clone();
+        rc4(&mut buf);
+        assert_ne!(buf, original);
+        rc4(&mut buf);
+        assert_eq!(buf, original);
+    }
+}
